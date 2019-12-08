@@ -8,7 +8,9 @@ import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.ClassFileVersion;
 import net.bytebuddy.description.modifier.Visibility;
 import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.implementation.FixedValue;
 import net.bytebuddy.implementation.StubMethod;
+import net.bytebuddy.utility.JavaConstant;
 import org.junit.Test;
 import org.mockito.exceptions.base.MockitoException;
 import org.mockito.internal.creation.MockSettingsImpl;
@@ -20,10 +22,16 @@ import org.mockito.mock.MockCreationSettings;
 import org.mockito.mock.SerializableMode;
 import org.mockito.plugins.MockMaker;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Observable;
+import java.util.Observer;
+import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.regex.Pattern;
 
 import static net.bytebuddy.ClassFileVersion.JAVA_V8;
+import static net.bytebuddy.ClassFileVersion.JAVA_V11;
 import static net.bytebuddy.matcher.ElementMatchers.named;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -287,6 +295,56 @@ public class InlineByteBuddyMockMakerTest extends AbstractByteBuddyMockMakerTest
                 .getOnly().getParameters().getOnly().getName()).isEqualTo("bar");
     }
 
+    @Test
+    public void test_constant_dynamic_compatibility() throws Exception {
+        assumeTrue(ClassFileVersion.ofThisVm().isAtLeast(JAVA_V11));
+
+        Class<?> typeWithCondy = new ByteBuddy()
+                .subclass(Callable.class)
+                .method(named("call"))
+                .intercept(FixedValue.value(JavaConstant.Dynamic.ofNullConstant()))
+                .make()
+                .load(null)
+                .getLoaded();
+
+        MockCreationSettings<?> settings = settingsFor(typeWithCondy);
+        @SuppressWarnings("unchecked")
+        Object proxy = mockMaker.createMock(settings, new MockHandlerImpl(settings));
+
+        assertThat(proxy.getClass()).isEqualTo(typeWithCondy);
+    }
+
+    @Test
+    public void test_clear_mock_clears_handler() {
+        MockCreationSettings<GenericSubClass> settings = settingsFor(GenericSubClass.class);
+        GenericSubClass proxy = mockMaker.createMock(settings, new MockHandlerImpl<GenericSubClass>(settings));
+        assertThat(mockMaker.getHandler(proxy)).isNotNull();
+
+        //when
+        mockMaker.clearMock(proxy);
+
+        //then
+        assertThat(mockMaker.getHandler(proxy)).isNull();
+    }
+
+    @Test
+    public void test_clear_all_mock_clears_handler() {
+        MockCreationSettings<GenericSubClass> settings = settingsFor(GenericSubClass.class);
+        GenericSubClass proxy1 = mockMaker.createMock(settings, new MockHandlerImpl<GenericSubClass>(settings));
+        assertThat(mockMaker.getHandler(proxy1)).isNotNull();
+
+        settings = settingsFor(GenericSubClass.class);
+        GenericSubClass proxy2 = mockMaker.createMock(settings, new MockHandlerImpl<GenericSubClass>(settings));
+        assertThat(mockMaker.getHandler(proxy1)).isNotNull();
+
+        //when
+        mockMaker.clearAllMocks();
+
+        //then
+        assertThat(mockMaker.getHandler(proxy1)).isNull();
+        assertThat(mockMaker.getHandler(proxy2)).isNull();
+    }
+
     private static <T> MockCreationSettings<T> settingsFor(Class<T> type, Class<?>... extraInterfaces) {
         MockSettingsImpl<T> mockSettings = new MockSettingsImpl<T>();
         mockSettings.setTypeToMock(type);
@@ -297,7 +355,9 @@ public class InlineByteBuddyMockMakerTest extends AbstractByteBuddyMockMakerTest
 
     @Test
     public void testMockDispatcherIsRelocated() throws Exception {
-        assertThat(InlineByteBuddyMockMaker.class.getClassLoader().getResource("org/mockito/internal/creation/bytebuddy/MockMethodDispatcher.raw")).isNotNull();
+        assertThat(InlineByteBuddyMockMaker.class.getClassLoader()
+            .getResource("org/mockito/internal/creation/bytebuddy/inject/MockMethodDispatcher.raw"))
+            .isNotNull();
     }
 
     private static final class FinalClass {
